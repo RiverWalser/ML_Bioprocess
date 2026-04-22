@@ -1,0 +1,4 @@
+cobra>=0.26.0
+micom>=0.35.0
+pandas
+numpy
