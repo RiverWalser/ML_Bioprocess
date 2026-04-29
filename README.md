@@ -1,120 +1,83 @@
-# RL-ODE-Bioprocesses
-1. What is the best **starting mix** of two microbial species? (called `IOR`)
-2. What is the best **feeding schedule over time**? (called `theta`)
+# rl-ode-bioprocesses
 
-If you are new to this topic, think of it like this:
-- `IOR` is how you choose your starting lineup.
-- `theta` is your game plan over 10 time periods.
-- The best game plan depends on the lineup, and the best lineup depends on the game plan.
+A bilevel optimization toy for a bioprocess: pick the starting mix of two
+microbial species (IOR ∈ [0, 1]) on the outside, and a 10-step feed
+schedule θ for that IOR on the inside. Yield depends on both, and the two
+choices interact, so you can't decouple them.
 
-That is why we use a two-level (bilevel) optimization setup.
+The simulator here is a hand-rolled differentiable function, not a real
+ODE. The point is to get the optimization structure right on something
+cheap and with a known answer before plugging in the actual model.
 
-## What this repository currently contains
+## Layout
 
-- `bioprocess_optimizer.py` — main script that runs the full optimization and saves plots.
-- `bo_posterior.png` — plot showing the model's estimate of yield across different IOR values.
-- `optimal_policy.png` — plot showing the best 10-step feed policy for the best IOR found.
-- `test.ipynb` — scratch notebook.
+- `bioprocess_optimizer.py` — the main run. BO over IOR on the outside,
+  gradient-based policy optimization on the inside.
+- `sanity_checks.py` — three checks: inner loop converges at every IOR,
+  the optimal policy shape actually changes with IOR (so the problem
+  isn't trivial), and BO beats random search over 5 seeds.
+- `optimizer_benchmark.py` — Adam vs torch L-BFGS vs scipy L-BFGS-B vs
+  IPOPT on the inner problem, against a closed-form ground truth.
+- PNGs are outputs from those scripts. The notebook is scratch.
 
-## What the script does (high-level)
+## Why bilevel
 
-When you run `python bioprocess_optimizer.py`, the script:
+Each IOR evaluation requires a full inner solve, so it's expensive. That's
+exactly the situation BO is good at: sample-efficient, and the GP gives a
+posterior so we know where we're still uncertain. Inside, the policy
+problem is smooth and only 10-dimensional, so a gradient method handles it
+in a handful of iterations.
 
-1. Uses a toy differentiable simulator function `simulate(theta, IOR)`.
-2. For a fixed IOR, finds the best `theta` using gradient-based optimization (Adam).
-3. Uses Bayesian Optimization to pick better IOR values over iterations.
-4. Repeats this process for 25 total evaluations.
-5. Prints progress and final best settings.
-6. Saves two plots.
+The two levels really do interact. The simulator weights species 1's
+contribution by an early time-window and species 2's by a late one, so the
+optimal feed schedule at IOR=0.1 looks nothing like the one at IOR=0.9
+(see `sanity_policy_overlay.png`).
 
-## Why this architecture is used
+## Inner-loop optimizer
 
-This is the key design idea:
+The inner objective turns out to be a strictly convex QP with box
+constraints: linear coefficients from the species windows, a `0.15·‖θ‖²`
+penalty, θ ∈ [0, 5]. It decouples coordinate-wise, which means we have a
+closed-form optimum to benchmark against.
 
-- **Inner loop (optimize policy):** For one chosen IOR, we optimize the 10 feed rates (`theta`) with gradients.
-- **Outer loop (optimize IOR):** We then decide which IOR to try next using a Bayesian model.
+We started with Adam in the sanity checks and torch's L-BFGS in the main
+loop. The benchmark compares all four candidates on gap-to-optimum and
+wall-clock:
 
-This works well because:
-- Policy optimization is smooth and fast with gradients.
-- IOR evaluation is expensive (it requires a full inner optimization), so Bayesian Optimization is sample-efficient.
-- Bayesian Optimization also gives uncertainty estimates, not just a single guess.
+| optimizer       | iters to 1e-8 gap | wall time |
+|-----------------|-------------------|-----------|
+| scipy L-BFGS-B  | 2                 | ~0.3 ms   |
+| torch L-BFGS    | 2                 | ~5 ms     |
+| IPOPT           | 8–10              | ~7 ms     |
+| Adam            | ~190              | ~50 ms    |
 
-## Plain-language explanation of the two plots
+scipy's L-BFGS-B wins on overhead: same iteration count as torch's
+L-BFGS, no autograd wrapping, native bound handling. IPOPT is overkill on
+this problem because the bounds are inactive at the optimum; it'd earn
+its keep if we added nonlinear constraints (a total-feed budget, for
+instance). Adam works, just ~100× slower than necessary on something this
+smooth.
 
-### `bo_posterior.png`
-
-This plot answers: **“Which IOR values seem best, and how sure are we?”**
-
-- Blue line = predicted yield for each IOR.
-- Blue shaded region = uncertainty band (90% confidence).
-- Red dots = IOR values we actually tested.
-- Green vertical dashed line = best IOR found.
-
-Use this plot to understand where the model thinks the sweet spot is, and where uncertainty is still high.
-
-### `optimal_policy.png`
-
-This plot answers: **“Given the best IOR, how should we feed over time?”**
-
-- 10 bars = feed rates for 10 time intervals.
-- Red dashed horizontal line = mean feed rate.
-
-Use this plot to see the shape of the recommended feeding schedule.
-
-## Definitions (quick glossary)
-
-- **Yield:** final performance score we want to maximize.
-- **IOR (Initial Inoculation Ratio):** starting fraction of species 1 (species 2 is `1 - IOR`).
-- **Policy (`theta`):** a list of 10 feed rates, one per time interval.
-- **Gradient descent / Adam:** method that improves parameters step by step using slope information.
-- **Bayesian Optimization:** method for smartly choosing the next experiment when evaluations are expensive.
-- **Gaussian Process (GP):** probabilistic model used inside Bayesian Optimization.
-- **Expected Improvement (EI):** rule for choosing the next IOR by balancing exploration and exploitation.
-
-## Current optimization settings
-
-- Policy dimension: 10 feed intervals
-- Inner optimizer: Adam
-- Inner steps per IOR: 300
-- Inner learning rate: 0.05
-- Policy bounds: each feed rate clipped to `[0.0, 5.0]`
-- BO initial random points: 5
-- BO total evaluations: 25
-- IOR search bounds: `[0.01, 0.99]`
-- GP: `SingleTaskGP` with output standardization
-- Acquisition: Expected Improvement
-
-## Requirements
-
-Install dependencies:
+## Running it
 
 ```bash
-pip install torch botorch gpytorch matplotlib numpy
+pip install torch botorch gpytorch scipy matplotlib numpy
+pip install cyipopt    # only needed for the IPOPT row of the benchmark
+                       # on macOS, conda-forge is easier:
+                       # conda install -c conda-forge cyipopt
+
+python bioprocess_optimizer.py    # main BO run
+python sanity_checks.py           # three sanity figures
+python optimizer_benchmark.py     # optimizer comparison
 ```
 
-## Run
+The main script saves `bo_posterior.png` (GP posterior over IOR with the
+observed points marked) and `optimal_policy.png` (the feed schedule at
+the best IOR). The benchmark saves both an iteration-axis and a
+wall-clock-axis version of the convergence story.
 
-From this folder:
+## What's next
 
-```bash
-python bioprocess_optimizer.py
-```
-
-## Console output you should expect
-
-- Per iteration: `BO iter {i}: IOR={val:.4f}, Yield={val:.4f}`
-- Final summary: `Best IOR: {val:.4f} | Best Yield: {val:.4f}`
-- Final policy: `Optimal policy theta*: [...]`
-- Plot message: `Plots saved: bo_posterior.png, optimal_policy.png`
-
-## How this matches the assignment request
-
-The assignment asked for:
-- optimize both feed policy and IOR,
-- use Bayesian methods,
-- quantify uncertainty,
-- and demonstrate on a differentiable toy Python function.
-
-This project does all four in one runnable script.
-
-Later, the toy simulator can be replaced by a real differentiable ODE simulator while keeping the same optimization structure.
+Swap the toy simulator for a real differentiable ODE. The optimization
+scaffolding doesn't need to change — that was the point of getting it
+right on a problem with a known answer first.
