@@ -157,7 +157,6 @@ def _merge_models(namespaced_a: cobra.Model,
         community.add_reactions([rxn_copy])
 
     # ---- weighted biomass objective ----
-    biomass_rxns = {}
     prefix_a = namespaced_a.id
     prefix_b = namespaced_b.id
 
@@ -185,13 +184,13 @@ def _merge_models(namespaced_a: cobra.Model,
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 5. CommunityModel dataclass 
+# 5. CommunityModel dataclass
 # ─────────────────────────────────────────────────────────────────────────────
 
 @dataclass
 class CommunityModel:
     """
-    Output of gem_adder(). 
+    Output of gem_adder().
     ----------
     cobra_model : cobra.Model
         The merged community model ready for FBA.
@@ -202,13 +201,15 @@ class CommunityModel:
     biomass_reaction_ids : dict[str, str]
         Maps species prefix → biomass reaction ID in the merged model.
     solo_growth_rates : dict[str, float]
-        I had an oopsie and this is now a placeholder.
+        Placeholder — solo growth is recomputed in fba_screen under
+        screening conditions (DEFAULT_CONDITIONS) for a meaningful ratio.
+        Values here are 0.0 and should not be used for tradeoff fractions.
     """
-    cobra_model:         cobra.Model
-    species:             list[str]
-    shared_metabolites:  list[str]
-    biomass_reaction_ids: dict[str, str]        = field(default_factory=dict)
-    solo_growth_rates:   dict[str, float]       = field(default_factory=dict)
+    cobra_model:          cobra.Model
+    species:              list[str]
+    shared_metabolites:   list[str]
+    biomass_reaction_ids: dict[str, str]   = field(default_factory=dict)
+    solo_growth_rates:    dict[str, float] = field(default_factory=dict)
 
     # ---- convenience methods ----
 
@@ -223,9 +224,6 @@ class CommunityModel:
             print(f"    {sid}_e")
         if len(self.shared_metabolites) > 8:
             print(f"    … and {len(self.shared_metabolites) - 8} more")
-        print(f"\n  Solo growth rates:")
-        for sp, gr in self.solo_growth_rates.items():
-            print(f"    {sp}: {gr:.4f} h⁻¹")
         print(f"{'='*55}\n")
 
     def run_fba(self) -> cobra.Solution:
@@ -257,22 +255,24 @@ def gem_adder(source_a: str,
     prefix_a = _safe_prefix(model_a.id)
     prefix_b = _safe_prefix(model_b.id)
 
-    # solo growth rates are computed in fba_screen under screening conditions
+    # solo growth rates are now computed in fba_screen under screening
+    # conditions to avoid the rich-medium vs restricted-medium mismatch.
+    # These 0.0 placeholders must not be used for tradeoff fractions.
     solo_a = 0.0
     solo_b = 0.0
 
-    # 3. find shared extracellular metabolites
+    # 2. find shared extracellular metabolites
     shared_ids = find_shared_metabolites(model_a, model_b)
     shared_set = set(shared_ids)
 
-    # 4. apply namespaces
+    # 3. apply namespaces
     ns_a = _apply_namespace(model_a, prefix_a, shared_set)
     ns_b = _apply_namespace(model_b, prefix_b, shared_set)
 
-    # 5. merge
+    # 4. merge
     community = _merge_models(ns_a, ns_b, shared_set, weight_a, weight_b)
 
-    # 6. collect biomass reaction IDs
+    # 5. collect biomass reaction IDs
     bm_ids = {}
     for prefix in (prefix_a, prefix_b):
         for rxn in community.reactions:
@@ -281,11 +281,11 @@ def gem_adder(source_a: str,
                 break
 
     return CommunityModel(
-        cobra_model         = community,
-        species             = [prefix_a, prefix_b],
-        shared_metabolites  = shared_ids,
-        biomass_reaction_ids= bm_ids,
-        solo_growth_rates   = {prefix_a: solo_a, prefix_b: solo_b},
+        cobra_model          = community,
+        species              = [prefix_a, prefix_b],
+        shared_metabolites   = shared_ids,
+        biomass_reaction_ids = bm_ids,
+        solo_growth_rates    = {prefix_a: solo_a, prefix_b: solo_b},
     )
 
 
